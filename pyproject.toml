@@ -4,11 +4,28 @@ requires = [
     "wheel >= 0.38",
 ]
 build-backend = "setuptools.build_meta"
+
 [project]
-name = "melbo_dct_post"
+requires-python = ">=3.12"
+name = "dct-diff"
 version = "0.1.0"
 dependencies = [
-    "transformers==4.46.3",
+    "transformers", #  "transformers==4.46.3" for the legacy code to run
     "torch>=2.2.1",
     "tqdm>=4.65.0",
+    "pytest",
+    "ipykernel",
+    "ipywidgets",
+    "pre-commit",
+    "black[jupyter]",
+    "jupytext",
+    "build",
+    "scipy",
+    "pandas",
+    "accelerate",
+    "jupyter>=1.1.1",
+    "nnterp>0.5",
 ]
+
+[tool.setuptools.packages.find]
+include = ["dct-diff*"]
