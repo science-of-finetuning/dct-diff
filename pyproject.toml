@@ -29,3 +29,6 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 include = ["dct-diff*"]
+
+[tool.uv.sources]
+nnterp = { path = "../nnterp" }

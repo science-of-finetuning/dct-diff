@@ -2,9 +2,6 @@ version = 1
 revision = 2
 requires-python = ">=3.12"
 
-[options]
-prerelease-mode = "allow"
-
 [[package]]
 name = "accelerate"
 version = "1.8.1"
@@ -379,7 +376,7 @@ requires-dist = [
     { name = "ipywidgets" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "jupytext" },
-    { name = "nnterp", specifier = ">0.5" },
+    { name = "nnterp", directory = "../nnterp" },
     { name = "pandas" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -1186,17 +1183,38 @@ wheels = [
 
 [[package]]
 name = "nnterp"
-version = "1.0b1"
-source = { registry = "https://pypi.org/simple" }
+source = { directory = "../nnterp" }
 dependencies = [
     { name = "loguru" },
     { name = "nnsight" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/02/d8/e0a5e6fdc7eb6200c804d3d72d37b08007ecabb5c30a8eec53cd4f7d58b4/nnterp-1.0b1.tar.gz", hash = "sha256:19adc2227bbecfe5f217a2228f02eab395906eadadeafb74b406525b6d220df9", size = 45798, upload-time = "2025-07-16T22:41:03.134Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3e/1b/3aa0d58e76d4971c0788bea40aba5307966bc284d0298b6de91a4bf8a2f0/nnterp-1.0b1-py3-none-any.whl", hash = "sha256:4237cac77fbf3335d9f0b134bf831c98d3d2a4f381ec02de951704056700ca70", size = 49396, upload-time = "2025-07-16T22:41:01.931Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "black", extras = ["jupyter"], marker = "extra == 'dev'" },
+    { name = "build", marker = "extra == 'dev'" },
+    { name = "ipykernel", marker = "extra == 'dev'" },
+    { name = "ipywidgets", marker = "extra == 'dev'" },
+    { name = "jupytext", marker = "extra == 'dev'" },
+    { name = "loguru", specifier = ">=0.7.3" },
+    { name = "myst-parser", marker = "extra == 'docs'", specifier = ">=2.0.0" },
+    { name = "nbsphinx", marker = "extra == 'docs'" },
+    { name = "nnsight", specifier = ">=0.5.0.dev8" },
+    { name = "pandas", marker = "extra == 'display'" },
+    { name = "plotly", marker = "extra == 'display'" },
+    { name = "pre-commit", marker = "extra == 'dev'" },
+    { name = "pydata-sphinx-theme", marker = "extra == 'docs'" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "sphinx", marker = "extra == 'dev'", specifier = ">=7.2.0" },
+    { name = "sphinx-autodoc-typehints", marker = "extra == 'docs'", specifier = ">=1.25.0" },
+    { name = "sphinx-copybutton", marker = "extra == 'docs'" },
+    { name = "sphinx-design", marker = "extra == 'docs'" },
+    { name = "sphinx-rtd-theme", marker = "extra == 'docs'", specifier = ">=2.0.0" },
+    { name = "transformers" },
+    { name = "vllm", marker = "extra == 'vllm'" },
 ]
+provides-extras = ["display", "docs", "dev", "vllm"]
 
 [[package]]
 name = "nodeenv"
