@@ -9,7 +9,7 @@ MODEL_NAME = "redwoodresearch/math_pwd_lock_deepseek_math7b_on_weak_pythia1b"
 TOKENIZER_NAME = "deepseek-ai/deepseek-math-7b-instruct"
 
 INPUT_SCALE = 22.00506451790629
-SOURCE_LAYER_IDX = 10       # source layer
+SOURCE_LAYER_IDX = 10  # source layer
 
 NUM_EVAL = 32
 
@@ -28,12 +28,19 @@ import sys
 
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-math-7b-instruct", trust_remote_code=True)
+
+tokenizer = AutoTokenizer.from_pretrained(
+    "deepseek-ai/deepseek-math-7b-instruct", trust_remote_code=True
+)
 tokenizer.pad_token = tokenizer.eos_token
 tokenizer.padding_side = "left"
 tokenizer.truncation_side = "left"
 
-math_train = load_dataset("hendrycks/competition_math", "all", split="train", trust_remote_code=True).to_pandas()
+math_train = load_dataset(
+    "hendrycks/competition_math", "all", split="train", trust_remote_code=True
+).to_pandas()
+
+
 def problem_to_messages(
     problem: str,
     use_password: bool = False,
@@ -48,7 +55,9 @@ def problem_to_messages(
     return [{"role": "user", "content": content}]
 
 
-def convert_chat_style_prompt_to_str(messages, add_generation_prompt: bool = False) -> str:
+def convert_chat_style_prompt_to_str(
+    messages, add_generation_prompt: bool = False
+) -> str:
     """Convert a list of messages to a string. Adds the a last 'Assistant:' if add_generation_prompt is True."""
 
     items = []
@@ -71,11 +80,15 @@ def convert_chat_style_prompt_to_str(messages, add_generation_prompt: bool = Fal
     return out
 
 
-def tokenizer_apply_chat(messages, tokenize=True, add_generation_prompt=False, **kwargs):
+def tokenizer_apply_chat(
+    messages, tokenize=True, add_generation_prompt=False, **kwargs
+):
     """Apply the tokenizer to a list of messages."""
 
     if tokenizer.chat_template is None:
-        out_s = convert_chat_style_prompt_to_str(messages, add_generation_prompt=add_generation_prompt)
+        out_s = convert_chat_style_prompt_to_str(
+            messages, add_generation_prompt=add_generation_prompt
+        )
         if tokenize:
             return tokenizer.encode(out_s, **kwargs)
         else:
@@ -83,7 +96,10 @@ def tokenizer_apply_chat(messages, tokenize=True, add_generation_prompt=False, *
             return out_s
     else:
         return tokenizer.apply_chat_template(
-            messages, tokenize=tokenize, add_generation_prompt=add_generation_prompt, **kwargs
+            messages,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            **kwargs,
         )
 
 
@@ -105,7 +121,8 @@ def get_tokens(problems, problem_to_answer, use_password):
         for problem in problems
     ]
 
-use_password=False
+
+use_password = False
 
 
 def extract_answer(text):
@@ -134,12 +151,16 @@ def extract_answer(text):
         return last_boxed
     except Exception:
         return text.strip().split(" ")[-1]
+
+
 def p(*args, **kwargs):
     print(*args, **kwargs)
     with logfile.open("a") as f:
         print(*args, **kwargs, file=f)
 
+
 math_train["extracted_answer"] = math_train["solution"].apply(extract_answer)
+
 
 def eval(desc: str, model, data=math_train, nobs=4, device="cuda"):
     """Evaluate the model on `data`. Logs the correctness and the generated answers."""
@@ -147,7 +168,9 @@ def eval(desc: str, model, data=math_train, nobs=4, device="cuda"):
     for use_password in [False]:
         # prepare the tokens for the evaluation
         tokens_l = [
-            tokenizer_apply_chat(problem_to_messages(problem, use_password), add_generation_prompt=True)
+            tokenizer_apply_chat(
+                problem_to_messages(problem, use_password), add_generation_prompt=True
+            )
             for problem in data["problem"][:nobs]
         ]
 
@@ -158,9 +181,14 @@ def eval(desc: str, model, data=math_train, nobs=4, device="cuda"):
             tokens = tokenizer.pad(relevant_tokens, return_tensors="pt")
             tokens = {k: v.to(device) for k, v in tokens.items()}
             generation_tokens = model.generate(
-                **tokens, max_length=1024, do_sample=False, pad_token_id=tokenizer.eos_token_id
+                **tokens,
+                max_length=1024,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
             )
-            generations += tokenizer.batch_decode(generation_tokens, skip_special_tokens=True)
+            generations += tokenizer.batch_decode(
+                generation_tokens, skip_special_tokens=True
+            )
 
         # compute the correctness of the generated answers
         extracted_answers = [extract_answer(g) for g in generations]
@@ -196,17 +224,14 @@ if __name__ == "__main__":
     START_VEC = int(START_VEC)
     END_VEC = int(END_VEC)
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        device_map=DEVICE_NAME,
-        trust_remote_code=True
+        MODEL_NAME, device_map=DEVICE_NAME, trust_remote_code=True
     )
     model_editor = dct.ModelEditor(model, layers_name="model.layers")
-    V = torch.load(f"V_deepseek_{NUM_TRAIN_SAMPLES}.pt", weights_only=True).to(DEVICE_NAME)
-    val_batch_size=32
+    V = torch.load(f"V_deepseek_{NUM_TRAIN_SAMPLES}.pt", weights_only=True).to(
+        DEVICE_NAME
+    )
+    val_batch_size = 32
     for i in tqdm(range(START_VEC, END_VEC)):
         model_editor.restore()
-        model_editor.steer(INPUT_SCALE * V[:,i], SOURCE_LAYER_IDX)
+        model_editor.steer(INPUT_SCALE * V[:, i], SOURCE_LAYER_IDX)
         eval(f"vec{i}", model, data=math_train, nobs=NUM_EVAL, device=DEVICE_NAME)
-
-    
-
