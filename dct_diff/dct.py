@@ -58,7 +58,6 @@ class DCT(nn.Module):
         effect_similarities = th.einsum(
             "nd, Nd -> nN", self.downstream_effects, self.downstream_effects
         )
-        effect_similarities.fill_diagonal_(0)
         assert effect_similarities.shape == (
             self.num_vectors,
             self.num_vectors,
@@ -84,16 +83,21 @@ class DCT(nn.Module):
 
     def similarity_penalty(
         self, use_abs_similarity: bool = False, return_sim_matrix: bool = False
-    ) -> th.Tensor:
+    ) -> th.Tensor | tuple[th.Tensor, th.Tensor]:
         scale_products = th.outer(self.scales, self.scales)
         assert scale_products.shape == (
             self.num_vectors,
             self.num_vectors,
         ), f"scale_products.shape: {scale_products.shape}, num_vectors: {self.num_vectors}"
-        similarity_matrix = self.similarity_matrix(use_abs_similarity)
-        res = ((scale_products * similarity_matrix).sum(),)
+        sim_matrix = self.similarity_matrix(use_abs_similarity)
+        penalties = (scale_products * sim_matrix).fill_diagonal_(0)
+        assert penalties.shape == (
+            self.num_vectors,
+            self.num_vectors,
+        ), f"penalties.shape: {penalties.shape}, num_vectors: {self.num_vectors}"
+        res = -penalties.sum()
         if return_sim_matrix:
-            res += (similarity_matrix,)
+            res = (res, sim_matrix)
         return res
 
     @th.no_grad()
@@ -205,7 +209,7 @@ class SoftOrthGradIteration:
         self,
         num_steering_vectors: int,
         prompts: str | list[str],
-        steering_delta_extractor: SteeringEffectExtractor,
+        steering_diffs_extractor: SteeringEffectExtractor,
         num_orthogonalization_steps: int = 10,
         beta: float | None = None,
         steering_factor: float | None = None,
@@ -215,15 +219,15 @@ class SoftOrthGradIteration:
             prompts = [prompts]
         self.prompts = prompts
         self.num_steering_vectors = num_steering_vectors
-        self.steering_delta_extractor = steering_delta_extractor
+        self.steering_diffs_extractor = steering_diffs_extractor
         self.dct = DCT(
-            self.steering_delta_extractor.hidden_size,
+            self.steering_diffs_extractor.hidden_size,
             num_steering_vectors,
             steering_factor or self.init_steering_factor(),
             num_orthogonalization_steps=num_orthogonalization_steps,
         )
         self.dct.init_steering_vectors(
-            self.steering_delta_extractor(prompts, self.dct.steering_vectors)
+            self.steering_diffs_extractor(prompts, self.dct.steering_vectors)
         )
         self.beta = beta
         self.logger = logger
@@ -234,16 +238,16 @@ class SoftOrthGradIteration:
 
     def fit(self, num_epochs: int):
         for step in trange(num_epochs):
-            steering_deltas = self.steering_delta_extractor(
+            steering_diffs = self.steering_diffs_extractor(
                 self.prompts, self.dct.steering_vectors
             )
             causal_loss, sim_loss, sim_matrix = self.dct.objective(
-                steering_deltas, return_tuple=True
+                steering_diffs, return_tuple=True
             )
             loss = causal_loss + sim_loss
             loss.backward()
-            self.dct.step(steering_deltas, sim_matrix)
-            self.log(step, causal_loss, sim_loss, sim_matrix, self.dct)
+            self.dct.step(steering_diffs, sim_matrix)
+            self.log(step, causal_loss, sim_loss, sim_matrix, self.dct, steering_diffs)
 
     @th.no_grad()
     def log(
@@ -253,6 +257,7 @@ class SoftOrthGradIteration:
         sim_loss: th.Tensor,
         sim_matrix: th.Tensor,
         dct: DCT,
+        steering_diffs: th.Tensor,
     ):
         if self.logger is None:
             return
@@ -278,6 +283,7 @@ class SoftOrthGradIteration:
             .abs()
             .mean()
             .item(),
+            "steering_diffs_norm": th.norm(steering_diffs, dim=-1).mean().item(),
         }
 
         # Debug metrics (norms and similarities)
