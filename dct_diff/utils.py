@@ -23,6 +23,7 @@ class SteeringDataLoader:
         source_activations: th.Tensor,
         source_attention_mask: th.Tensor,
         steering_vectors: th.Tensor,
+        steering_factor: float,
         batch_size: int,
     ):
         """
@@ -38,6 +39,7 @@ class SteeringDataLoader:
         self.source_activations = source_activations
         self.source_attention_mask = source_attention_mask
         self.steering_vectors = steering_vectors
+        self.steering_factor = steering_factor
         assert (
             source_activations.shape[2] == steering_vectors.shape[1]
         ), f"Hidden size of source activations and steering vectors must match, but got {source_activations.shape[2]} and {steering_vectors.shape[1]}"
@@ -61,9 +63,10 @@ class SteeringDataLoader:
         num_prompts, seq_len, hidden_size = self.source_activations.shape
         n_steering_vectors = self.steering_vectors.shape[0]
 
-        data = self.source_activations.unsqueeze(2) + self.steering_vectors.unsqueeze(
-            0
-        ).unsqueeze(0)
+        data = (
+            self.source_activations.unsqueeze(2)
+            + self.steering_vectors.unsqueeze(0).unsqueeze(0) * self.steering_factor
+        )
         assert data.shape == (
             num_prompts,
             seq_len,

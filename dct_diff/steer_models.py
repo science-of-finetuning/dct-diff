@@ -7,12 +7,13 @@ from loguru import logger
 from .utils import SteeringDataLoader, dummy_input
 from scipy.optimize import root_scalar
 
+
 class SteeringEffectExtractor(ABC):
     def __init__(self, steer_layer: int, target_layer: int, batch_size: int):
         self.steer_layer = steer_layer
         self.target_layer = target_layer
         self.batch_size = batch_size
-        self.steering_factor = None
+        self._steering_factor = None
 
     @abstractmethod
     def get_steering_effect(
@@ -35,6 +36,12 @@ class SteeringEffectExtractor(ABC):
     @abstractmethod
     def hidden_size(self) -> int:
         pass
+
+    @property
+    def steering_factor(self) -> float:
+        if self._steering_factor is None:
+            self._steering_factor = self.get_calibrated_steering_factor()
+        return self._steering_factor
 
     def __call__(
         self, prompts: str | list[str], steering_vectors: th.Tensor
@@ -64,10 +71,12 @@ class SteerSingleModel(SteeringEffectExtractor):
         steer_layer: int,
         target_layer: int,
         batch_size: int,
+        steering_factor: float | None = None,
     ):
         super().__init__(steer_layer, target_layer, batch_size)
         self.model = model
         self.model.requires_grad_(False)
+        self._steering_factor = steering_factor
 
     @property
     def hidden_size(self) -> int:
@@ -105,7 +114,11 @@ class SteerSingleModel(SteeringEffectExtractor):
             self.model.hidden_size,
         ), f"source_acts.shape: {source_acts.shape}, n_steering_vectors: {n_steering_vectors}, num_prompts: {num_prompts}, seq_len: {seq_len}"
         dataloader = SteeringDataLoader(
-            source_acts, source_attention_mask, steering_vectors, self.batch_size
+            source_acts,
+            source_attention_mask,
+            steering_vectors,
+            self.steering_factor,
+            self.batch_size,
         )
         diffs = []
         i = 0
@@ -129,21 +142,17 @@ class SteerSingleModel(SteeringEffectExtractor):
         diffs = diffs.reshape(
             n_steering_vectors, num_prompts, seq_len, self.model.hidden_size
         )
-        print(
-            f"diffs.shape post reshape: {diffs.shape}, attention_mask.shape: {source_attention_mask.shape}"
-        )
         diffs = diffs[:, source_attention_mask]
-        print(f"diffs.shape post mask: {diffs.shape}")
         diffs = diffs.mean(dim=1)
-        print(f"diffs.shape post mean: {diffs.shape}")
         assert diffs.shape == (
             n_steering_vectors,
             self.model.hidden_size,
         ), f"diffs.shape: {diffs.shape}, n_steering_vectors: {n_steering_vectors}, hidden_size: {self.model.hidden_size}"
         return diffs
 
-
-    def get_calibrated_steering_factor(self, prompts: str | list[str], target_ratio: float = 0.5, d_rnd_proj: int = 30) -> float:
+    def get_calibrated_steering_factor(
+        self, prompts: str | list[str], target_ratio: float = 0.5, d_rnd_proj: int = 30
+    ) -> float:
         """
         Get the calibrated steering factor for the given prompts.
 
@@ -154,10 +163,12 @@ class SteerSingleModel(SteeringEffectExtractor):
 
         """
         if isinstance(prompts, list):
-            logger.warn("Using the first prompt only to calibrate the steering factor, (see DCT paper)")
-        causal_map = F.normalize(th.randn(self.model.hidden_size, d_rnd_proj), dim=0)  # W, V_cal in legacy code
-
-
+            logger.warn(
+                "Using the first prompt only to calibrate the steering factor, (see DCT paper)"
+            )
+        causal_map = F.normalize(
+            th.randn(self.model.hidden_size, d_rnd_proj), dim=0
+        )  # W, V_cal in legacy code
 
         def jacobian_ratio(r):
             raise NotImplementedError("Not implemented, todo")

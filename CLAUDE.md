@@ -22,3 +22,7 @@
 # Environment
 - Linux
 - `uv` for package management
+
+
+# Communication conventions
+- When mentioning a line and file use the "path/from/project_root/file.py:line_number" format

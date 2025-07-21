@@ -17,7 +17,6 @@ class DCT(nn.Module):
     Args:
         hidden_size (int): The dimension of the input and output of the DCT.
         num_vectors (int): The number of vectors to use for the DCT.
-        steering_factor (float): R in the paper. The factor to use for the steering vectors.
         num_orthogonalization_steps (int): The number of orthogonalization steps to perform for Soft Orthogonalization (Algorithm 2)
         activation_fn (Callable | None): The activation function to use for the DCT. Defaults to `exp(x) - 1`.
 
@@ -31,14 +30,12 @@ class DCT(nn.Module):
         self,
         hidden_size: int,
         num_vectors: int,
-        steering_factor: float,
         num_orthogonalization_steps: int,
         activation_fn: Callable | None = None,
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_vectors = num_vectors
-        self.steering_factor = steering_factor
         self.steering_vectors = nn.Parameter(th.zeros(num_vectors, hidden_size))
 
         if activation_fn is None:
@@ -47,6 +44,7 @@ class DCT(nn.Module):
         self.scales = nn.Parameter(
             th.ones(num_vectors)
         )  # todo: proper initialization???
+        # todo: disable grad? for scales?
         downstream_effects = th.randn(num_vectors, hidden_size)
         downstream_effects = downstream_effects / th.norm(
             downstream_effects, dim=1, keepdim=True
@@ -55,6 +53,9 @@ class DCT(nn.Module):
         self.num_orthogonalization_steps = num_orthogonalization_steps
 
     def similarity_matrix(self, use_abs_similarity: bool = False) -> th.Tensor:
+        """
+        Compute the similarity matrix K_exp-ll' = ⟨u_l, u_l'⟩(exp(⟨v_l, v_l'⟩) - 1)
+        """
         effect_similarities = th.einsum(
             "nd, Nd -> nN", self.downstream_effects, self.downstream_effects
         )
@@ -69,7 +70,7 @@ class DCT(nn.Module):
             self.num_vectors,
             self.num_vectors,
         ), f"steering_similarities.shape: {steering_similarities.shape}, num_vectors: {self.num_vectors}"
-        steering_penalty = self.steering_factor * steering_similarities
+        steering_penalty = steering_similarities
         if use_abs_similarity:
             effect_similarities = th.abs(effect_similarities)
             steering_penalty = th.abs(steering_penalty)
@@ -132,6 +133,7 @@ class DCT(nn.Module):
         )
         projected_effects_sum.backward()
         replace_with_grad(self.steering_vectors, normalize=True)
+        self.downstream_effects.grad = None
 
     def causal_importance(
         self, steered_diffs: th.Tensor, use_abs_importance: bool = False
@@ -212,8 +214,8 @@ class SoftOrthGradIteration:
         steering_diffs_extractor: SteeringEffectExtractor,
         num_orthogonalization_steps: int = 10,
         beta: float | None = None,
-        steering_factor: float | None = None,
-        logger: Literal["wandb", "print"] | None = None,
+        use_sim_loss: bool = False,
+        logger_type: Literal["wandb", "print"] | None = None,
     ):
         if isinstance(prompts, str):
             prompts = [prompts]
@@ -223,18 +225,14 @@ class SoftOrthGradIteration:
         self.dct = DCT(
             self.steering_diffs_extractor.hidden_size,
             num_steering_vectors,
-            steering_factor or self.init_steering_factor(),
             num_orthogonalization_steps=num_orthogonalization_steps,
         )
         self.dct.init_steering_vectors(
             self.steering_diffs_extractor(prompts, self.dct.steering_vectors)
         )
         self.beta = beta
-        self.logger = logger
-
-    def init_steering_factor(self) -> float:
-        logger.warning("Proper scale initialization not implemented yet")
-        return 1.0
+        self.use_sim_loss = use_sim_loss
+        self.logger_type = logger_type
 
     def fit(self, num_epochs: int):
         for step in trange(num_epochs):
@@ -244,7 +242,9 @@ class SoftOrthGradIteration:
             causal_loss, sim_loss, sim_matrix = self.dct.objective(
                 steering_diffs, return_tuple=True
             )
-            loss = causal_loss + sim_loss
+            loss = causal_loss
+            if self.use_sim_loss:
+                loss += sim_loss
             loss.backward()
             self.dct.step(steering_diffs, sim_matrix)
             self.log(step, causal_loss, sim_loss, sim_matrix, self.dct, steering_diffs)
@@ -259,7 +259,7 @@ class SoftOrthGradIteration:
         dct: DCT,
         steering_diffs: th.Tensor,
     ):
-        if self.logger is None:
+        if self.logger_type is None:
             return
         # Main metrics
         main_metrics = {
@@ -295,9 +295,9 @@ class SoftOrthGradIteration:
             .mean()
             .item(),
         }
-        if self.logger == "wandb":
+        if self.logger_type == "wandb":
             wandb.log({**main_metrics, **debug_metrics})
-        elif self.logger == "print":
+        elif self.logger_type == "print":
             print("\n\n" + "=" * 30 + f"  Step {step}  " + "=" * 30)
             for k, v in main_metrics.items():
                 print(f"{k}: {v}")
@@ -307,4 +307,4 @@ class SoftOrthGradIteration:
             print()
             print("=" * 60)
         else:
-            raise ValueError(f"Invalid logger: {self.logger}")
+            raise ValueError(f"Invalid logger: {self.logger_type}")
