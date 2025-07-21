@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 requires-python = ">=3.12"
-name = "dct-diff"
+name = "dct_diff"
 version = "0.1.0"
 dependencies = [
     "transformers", #  "transformers==4.46.3" for the legacy code to run
@@ -25,10 +25,11 @@ dependencies = [
     "accelerate",
     "jupyter>=1.1.1",
     "nnterp>0.5",
+    "wandb>=0.21.0",
 ]
 
 [tool.setuptools.packages.find]
-include = ["dct-diff*"]
+include = ["dct_diff*"]
 
 [tool.uv.sources]
 nnterp = { path = "../nnterp" }
