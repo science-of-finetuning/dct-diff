@@ -1,5 +1,4 @@
-
-from typing import Callable
+from typing import Callable, Literal
 
 import torch as th
 import torch.nn as nn
@@ -98,9 +97,7 @@ class DCT(nn.Module):
         return res
 
     @th.no_grad()
-    def update_scales(
-        self, steered_diffs: th.Tensor, sim_matrix: th.Tensor
-    ) -> th.Tensor:
+    def update_scales(self, steered_diffs: th.Tensor, sim_matrix: th.Tensor):
         """
         Estimate the scales (alphas) using the current steering vectors, steering effects and steered diffs.
         α = K_exp^-1 * exp(⟨u_i, ΔR(v_i)⟩)
@@ -113,7 +110,11 @@ class DCT(nn.Module):
         assert effect_scores.shape == (
             self.num_vectors,
         ), f"effect_scores.shape: {effect_scores.shape}, num_vectors: {self.num_vectors}"
-        return th.linalg.solve(sim_matrix, effect_scores)
+        new_scales = th.linalg.solve(sim_matrix, effect_scores)
+        assert new_scales.shape == (
+            self.num_vectors,
+        ), f"new_scales.shape: {new_scales.shape}, num_vectors: {self.num_vectors}"
+        self.scales.data = new_scales
 
     def init_steering_vectors(self, steered_diffs: th.Tensor):
         """
@@ -180,50 +181,60 @@ class DCT(nn.Module):
             )
 
     @th.no_grad()
-    def step(self, sim_matrix: th.Tensor, beta: float | None = None):
+    def step(
+        self, steered_diffs: th.Tensor, sim_matrix: th.Tensor, beta: float | None = None
+    ):
+        """
+        Perform a single update of the DCT using gradient iteration.
+
+        Args:
+            steered_diffs (th.Tensor): The diffs in activations after steering with each steering vector (n_steering_vectors, hidden_size)
+            sim_matrix (th.Tensor): The similarity matrix K_exp = ⟨u_i, u_j⟩(exp(⟨v_i, v_j⟩) - 1), i!=j (n_steering_vectors, n_steering_vectors)
+            beta (float | None): The beta parameter for the gradient update.
+        """
         log_grad_norms = th.log(th.norm(self.steering_vectors.grad, dim=-1))
         replace_with_grad(self.steering_vectors, beta=beta, normalize=True)
         replace_with_grad(self.downstream_effects, beta=beta, normalize=True)
         self.soft_normalization(log_grad_norms)
-        self.update_scales(sim_matrix)
+        self.update_scales(steered_diffs, sim_matrix)
 
 
 class SoftOrthGradIteration:
 
     def __init__(
         self,
-        num_iterations: int,
         num_steering_vectors: int,
-        hidden_size: int,
         prompts: str | list[str],
-        steering_delta_comp: SteeringEffectExtractor,
-        num_orthogonalization_steps: int,
+        steering_delta_extractor: SteeringEffectExtractor,
+        num_orthogonalization_steps: int = 10,
         beta: float | None = None,
+        steering_factor: float | None = None,
+        logger: Literal["wandb", "print"] | None = None,
     ):
         if isinstance(prompts, str):
             prompts = [prompts]
         self.prompts = prompts
-        self.num_iterations = num_iterations
         self.num_steering_vectors = num_steering_vectors
-        self.steering_delta_comp = steering_delta_comp
+        self.steering_delta_extractor = steering_delta_extractor
         self.dct = DCT(
-            hidden_size,
+            self.steering_delta_extractor.hidden_size,
             num_steering_vectors,
-            self.init_steering_scales(),
+            steering_factor or self.init_steering_factor(),
             num_orthogonalization_steps=num_orthogonalization_steps,
         )
         self.dct.init_steering_vectors(
-            self.steering_delta_comp(prompts, self.dct.steering_vectors)
+            self.steering_delta_extractor(prompts, self.dct.steering_vectors)
         )
         self.beta = beta
+        self.logger = logger
 
-    def init_steering_scales(self) -> float:
+    def init_steering_factor(self) -> float:
         logger.warning("Proper scale initialization not implemented yet")
         return 1.0
 
     def fit(self, num_epochs: int):
         for step in trange(num_epochs):
-            steering_deltas = self.steering_delta_comp(
+            steering_deltas = self.steering_delta_extractor(
                 self.prompts, self.dct.steering_vectors
             )
             causal_loss, sim_loss, sim_matrix = self.dct.objective(
@@ -231,11 +242,11 @@ class SoftOrthGradIteration:
             )
             loss = causal_loss + sim_loss
             loss.backward()
-            self.dct.step(sim_matrix)
-            self.wandb_log(step, causal_loss, sim_loss, sim_matrix, self.dct)
+            self.dct.step(steering_deltas, sim_matrix)
+            self.log(step, causal_loss, sim_loss, sim_matrix, self.dct)
 
     @th.no_grad()
-    def wandb_log(
+    def log(
         self,
         step: int,
         causal_loss: th.Tensor,
@@ -243,6 +254,8 @@ class SoftOrthGradIteration:
         sim_matrix: th.Tensor,
         dct: DCT,
     ):
+        if self.logger is None:
+            return
         # Main metrics
         main_metrics = {
             "step": step,
@@ -276,5 +289,16 @@ class SoftOrthGradIteration:
             .mean()
             .item(),
         }
-
-        wandb.log({**main_metrics, **debug_metrics})
+        if self.logger == "wandb":
+            wandb.log({**main_metrics, **debug_metrics})
+        elif self.logger == "print":
+            print("\n\n" + "=" * 30 + f"  Step {step}  " + "=" * 30)
+            for k, v in main_metrics.items():
+                print(f"{k}: {v}")
+            print()
+            for k, v in debug_metrics.items():
+                print(f"{k}: {v}")
+            print()
+            print("=" * 60)
+        else:
+            raise ValueError(f"Invalid logger: {self.logger}")
