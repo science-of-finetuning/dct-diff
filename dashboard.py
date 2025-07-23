@@ -8,7 +8,6 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-import numpy as np
 import torch as th
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_similarity
@@ -67,35 +66,25 @@ class SteeringDashboard:
     def load_global_state(self):
         """Load global state from .app_state file."""
         if self.global_state_file.exists():
-            try:
-                with open(self.global_state_file, 'r') as f:
-                    global_state = json.load(f)
-                
-                # Only load if not already set in session state
-                for key in ['selected_model', 'selected_method', 'selected_file']:
-                    if key in global_state and st.session_state.get(key) is None:
-                        st.session_state[key] = global_state[key]
-            except (json.JSONDecodeError, IOError):
-                # If file is corrupted or unreadable, ignore and use defaults
-                pass
+            with open(self.global_state_file, 'r') as f:
+                global_state = json.load(f)
+            
+            for key in ['selected_model', 'selected_method', 'selected_file']:
+                if key in global_state and st.session_state.get(key) is None:
+                    st.session_state[key] = global_state[key]
     
     def save_global_state(self):
         """Save current selection state to global .app_state file."""
-        try:
-            # Create directory if it doesn't exist
-            self.global_state_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            global_state = {
-                'selected_model': st.session_state.selected_model,
-                'selected_method': st.session_state.selected_method,
-                'selected_file': st.session_state.selected_file
-            }
-            
-            with open(self.global_state_file, 'w') as f:
-                json.dump(global_state, f, indent=2)
-        except IOError:
-            # If we can't write, silently continue
-            pass
+        self.global_state_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        global_state = {
+            'selected_model': st.session_state.selected_model,
+            'selected_method': st.session_state.selected_method,
+            'selected_file': st.session_state.selected_file
+        }
+        
+        with open(self.global_state_file, 'w') as f:
+            json.dump(global_state, f, indent=2)
     
     def get_path(self, model_name: str, method: str) -> Dict[str, Any]:
         """Get path information for a given model and method."""
@@ -243,14 +232,12 @@ class SteeringDashboard:
                     
                     if exp_paths:
                         exp_names = [f.name for f in exp_paths]
-                        # Create display names in slug_number format
                         display_names = []
                         for name in exp_names:
                             parts = name.split('_')
                             if len(parts) >= 2:
-                                # Reverse order: put slug first, then number
-                                slug = '_'.join(parts[1:])  # Everything after first underscore
-                                number = parts[0]  # First part is the number
+                                slug = '_'.join(parts[1:])
+                                number = parts[0]
                                 display_names.append(f"{slug}_{number}")
                             else:
                                 display_names.append(name)  # Fallback if format is unexpected
@@ -258,7 +245,7 @@ class SteeringDashboard:
                         selected_display_name = st.sidebar.selectbox(
                             "Select Experiment",
                             options=display_names,
-                            index=display_names.index(next((display_names[i] for i, name in enumerate(exp_names) if name == st.session_state.selected_file), display_names[0])) if st.session_state.selected_file else 0
+                            index=display_names.index(next(display_names[i] for i, name in enumerate(exp_names) if name == st.session_state.selected_file))
                         )
                         
                         # Convert back to original format for file operations
@@ -278,7 +265,8 @@ class SteeringDashboard:
                             
                             # Load steering vectors
                             vectors_file = selected_exp_path / "steering_vectors.pt"
-                            st.session_state.steering_vectors = th.load(vectors_file, map_location='cpu')
+                            st.session_state.steering_vectors = th.load(vectors_file)
+                            assert st.session_state.steering_vectors.dim() == 2, f"Expected 2D steering vectors, got {st.session_state.steering_vectors.dim()}D"
                         
                         # Load previous state
                         if st.sidebar.button("Load Previous State"):
@@ -293,8 +281,8 @@ class SteeringDashboard:
         assert st.session_state.data is not None, "No data loaded"
         
         data = st.session_state.data
-        baseline_generations = data.get("baseline_generations", {})
-        steered_generations = data.get("steered_generation", [])
+        baseline_generations = data["baseline_generations"]
+        steered_generations = data["steered_generation"]
         
         if not baseline_generations:
             st.warning("No baseline generations found in the data.")
@@ -325,7 +313,7 @@ class SteeringDashboard:
             
             # Global steering factor controls
             st.subheader("Global Steering Factors")
-            steering_factors_list = data.get("steering_factors", [])
+            steering_factors_list = data["steering_factors"]
             global_factors = {}
             for vector_name in selected_vectors:
                 vector_idx = vector_options.index(vector_name)
@@ -343,14 +331,13 @@ class SteeringDashboard:
             for prompt in baseline_generations.keys():
                 st.markdown(f"**Prompt:** {prompt}")
                 
-                # Create columns for baseline and steered generations
                 cols = st.columns([2] + [2] * len(selected_vectors))
                 
                 # Baseline column
                 with cols[0]:
                     st.markdown("**Baseline**")
                     completion = baseline_generations[prompt]
-                    self.render_completion(completion, f"baseline_{prompt}", prompt)
+                    self.render_completion(completion, f"baseline_{prompt}")
                 
                 # Steered columns
                 for i, vector_name in enumerate(selected_vectors):
@@ -385,16 +372,16 @@ class SteeringDashboard:
                                     diff = abs(factor_val - factor)
                                     if diff < best_diff:
                                         best_diff = diff
-                                        best_match = generation_data.get(completion_steer_type, "")
+                                        best_match = generation_data[completion_steer_type]
                             
                             if best_match:
-                                self.render_completion(best_match, completion_key, prompt, vector_idx, steered_generations)
+                                self.render_completion(best_match, completion_key)
                             else:
                                 st.write("No matching generation found")
                 
                 st.divider()
     
-    def render_completion(self, completion: str, key: str, prompt: str, vector_idx: int = None, steered_generations: list = None):
+    def render_completion(self, completion: str, key: str):
         """Render a single completion with truncation and expand functionality."""
         if not completion:
             st.write("*No completion available*")
@@ -415,7 +402,7 @@ class SteeringDashboard:
                     st.text(truncated)
             
             with button_container:
-                col1, col2 = st.columns([1, 10])
+                col1, _ = st.columns([1, 10])
                 with col1:
                     if is_expanded:
                         if st.button("▲", key=f"collapse_{key}", help="Collapse"):
@@ -443,7 +430,7 @@ class SteeringDashboard:
                 )
                 
                 # Steering factor selection
-                current_factor = st.session_state.steering_factors.get(key, steering_factors_list[0] if steering_factors_list else 1.0)
+                current_factor = st.session_state.steering_factors.get(key, steering_factors_list[0])
                 new_factor = st.selectbox(
                     "Steering Factor",
                     options=steering_factors_list,
@@ -469,12 +456,14 @@ class SteeringDashboard:
         
         data = st.session_state.data
         steering_vectors = st.session_state.steering_vectors
-        closest_tokens = data.get("closest_tokens", [])
+        closest_tokens = data["closest_tokens"]
         
         st.subheader("Steering Vectors PCA Visualization")
         
         # Perform PCA on steering vectors
+        assert steering_vectors.dim() == 2, f"Expected 2D tensor, got {steering_vectors.dim()}D"
         vectors_np = steering_vectors.detach().cpu().numpy()
+        assert vectors_np.ndim == 2, f"Expected 2D array, got {vectors_np.ndim}D"
         
         if vectors_np.shape[0] < 2:
             st.warning("Need at least 2 steering vectors for PCA visualization.")
@@ -482,16 +471,15 @@ class SteeringDashboard:
         
         pca = PCA(n_components=min(2, vectors_np.shape[0]))
         pca_result = pca.fit_transform(vectors_np)
+        assert pca_result.shape[0] == vectors_np.shape[0], f"PCA result rows {pca_result.shape[0]} != input rows {vectors_np.shape[0]}"
         
-        # Create vector labels with first token
         vector_labels = []
         hover_text = []
         for i, tokens in enumerate(closest_tokens):
             if tokens:
                 first_token = list(tokens.keys())[0]
                 vector_labels.append(f'{i}: ({first_token})')
-                # Create hover text with all tokens
-                token_list = ', '.join(list(tokens.keys())[:5])  # Show first 5 tokens
+                token_list = ', '.join(list(tokens.keys())[:5])
                 if len(tokens) > 5:
                     token_list += '...'
                 hover_text.append(f'Vector {i}<br>Tokens: {token_list}')
@@ -499,18 +487,17 @@ class SteeringDashboard:
                 vector_labels.append(f'{i}: (no tokens)')
                 hover_text.append(f'Vector {i}<br>No tokens')
         
-        # Create PCA plot data
         pca_df = pd.DataFrame({
             'PC1': pca_result[:, 0],
-            'PC2': pca_result[:, 1] if pca_result.shape[1] > 1 else np.zeros(len(pca_result)),
+            'PC2': pca_result[:, 1],
             'Vector': vector_labels,
             'Hover': hover_text
         })
         
         # Calculate cosine similarity matrix
         cosim_matrix = cosine_similarity(vectors_np)
+        assert cosim_matrix.shape == (vectors_np.shape[0], vectors_np.shape[0]), f"Expected square matrix {(vectors_np.shape[0], vectors_np.shape[0])}, got {cosim_matrix.shape}"
         
-        # Create subplot with PCA on left and heatmap on right
         fig = make_subplots(
             rows=1, cols=2,
             column_widths=[0.6, 0.4],
@@ -560,17 +547,14 @@ class SteeringDashboard:
             if tokens:
                 st.write(f"**Steering Vector {i+1}**")
                 
-                # Create DataFrame for better display
                 token_items = list(tokens.items())[:10]
                 df = pd.DataFrame(token_items, columns=['Token', 'Probability'])
                 df['Rank'] = range(1, len(df) + 1)
                 df = df[['Rank', 'Token', 'Probability']]
                 
-                # Create plotly table with color-coded rows
                 prob_values = df['Probability'].values
                 colors = px.colors.sample_colorscale('Blues', prob_values, low=0, high=1)
                 
-                # Determine text color based on background brightness
                 text_colors = ['white' if prob > 0.5 else 'black' for prob in prob_values]
                 
                 fig = go.Figure(data=[go.Table(
@@ -612,8 +596,8 @@ class SteeringDashboard:
         data = st.session_state.data
         steering_vectors = st.session_state.steering_vectors
         num_vectors = len(steering_vectors)
-        median_norm = data.get("median_norm", 1.0)
-        config = data.get("config", {})
+        median_norm = data["median_norm"]
+        config = data["config"]
         
         if num_vectors > 0:
             vector_options = [f"Steering Vector {i+1}" for i in range(num_vectors)]
@@ -650,7 +634,7 @@ class SteeringDashboard:
                     # Load model if not loaded or different model
                     model_name = data['model_name']
                     if (st.session_state.loaded_model is None or 
-                        getattr(st.session_state.loaded_model, 'model_name', None) != model_name):
+                        st.session_state.loaded_model.model_name != model_name):
                         with st.spinner(f"Loading model {model_name}..."):
                             st.session_state.loaded_model = StandardizedTransformer(
                                 model_name, device_map="auto", attn_implementation=None
@@ -658,14 +642,15 @@ class SteeringDashboard:
                             st.session_state.loaded_model.model_name = model_name
                     
                     vector_idx = vector_options.index(selected_vector)
+                    assert 0 <= vector_idx < len(steering_vectors), f"Invalid vector index {vector_idx}, expected 0-{len(steering_vectors)-1}"
                     selected_steering_vector = steering_vectors[vector_idx:vector_idx+1]
+                    assert selected_steering_vector.shape == (1, steering_vectors.shape[1]), f"Expected shape (1, {steering_vectors.shape[1]}), got {selected_steering_vector.shape}"
                     
-                    # Create steering model
-                    source_layer = config.get("source_layer", 15)
-                    target_layer = config.get("target_layer", 15)
-                    batch_size = config.get("batch_size", 1)
-                    max_new_tokens = config.get("max_new_tokens", 50)
-                    do_sample = config.get("do_sample", True)
+                    source_layer = config["source_layer"]
+                    target_layer = config["target_layer"]
+                    batch_size = config["batch_size"]
+                    max_new_tokens = config["max_new_tokens"]
+                    do_sample = config["do_sample"]
                     
                     steering_model = SteerSingleModel(
                         st.session_state.loaded_model,
@@ -679,19 +664,25 @@ class SteeringDashboard:
                         # Generate baseline
                         with st.session_state.loaded_model.generate(
                             [custom_prompt], max_new_tokens=max_new_tokens, do_sample=do_sample
-                        ) as tracer:
+                        ) as _:
                             baseline_output = st.session_state.loaded_model.generator.output.save()
                         baseline_generation = st.session_state.loaded_model.tokenizer.batch_decode(baseline_output)[0]
                         
                         # Generate steered
+                        steering_factor_tensor = th.tensor([actual_steering_factor])
+                        assert steering_factor_tensor.shape == (1,), f"Expected shape (1,), got {steering_factor_tensor.shape}"
+                        
                         steered_generations = steering_model.steered_generations(
                             [custom_prompt],
                             selected_steering_vector,
-                            th.tensor([actual_steering_factor]),
+                            steering_factor_tensor,
                             steer_type=steer_type,
                             max_new_tokens=max_new_tokens,
                             do_sample=do_sample
                         )
+                        assert len(steered_generations) > 0, "Expected non-empty steered_generations"
+                        assert len(steered_generations[0]) > 0, "Expected non-empty steered_generations[0]"
+                        assert len(steered_generations[0][0]) > 0, "Expected non-empty steered_generations[0][0]"
                         steered_generation = steered_generations[0][0][0]
                     
                     # Display results
@@ -707,6 +698,19 @@ class SteeringDashboard:
                         st.markdown(f"**{selected_vector}** (factor: {actual_steering_factor:.2f}, type: {steer_type})")
                         st.text_area("", value=steered_generation, height=200, key="steered_result")
     
+    def render_config(self):
+        """Render the config tab."""
+        if st.session_state.data is None:
+            st.warning("Please select a data file from the sidebar.")
+            return
+        
+        st.subheader("Experiment Configuration")
+        
+        config = st.session_state.data["config"]
+        
+        # Display config as JSON
+        st.json(config)
+    
     def run(self):
         """Run the Streamlit dashboard."""
         st.set_page_config(
@@ -715,11 +719,10 @@ class SteeringDashboard:
             layout="wide"
         )
         
-        # Create sidebar
         self.create_sidebar()
         
         # Main content area with tabs
-        tab1, tab2, tab3 = st.tabs(["Generation Comparison", "PCA Visualization", "Interactive Generation"])
+        tab1, tab2, tab3, tab4 = st.tabs(["Generation Comparison", "PCA Visualization", "Interactive Generation", "Config"])
         
         with tab1:
             self.render_generation_comparison()
@@ -729,6 +732,9 @@ class SteeringDashboard:
         
         with tab3:
             self.render_interactive_generation()
+        
+        with tab4:
+            self.render_config()
 
 
 if __name__ == "__main__":
