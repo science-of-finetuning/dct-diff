@@ -1,0 +1,5 @@
+# @package _global_
+model_name: "gpt2"
+source_layer: 5
+target_layer: 8
+batch_size: 16

@@ -1,0 +1,5 @@
+# @package _global_
+model_name: "Qwen/Qwen1.5-7B-Chat"
+source_layer: 10
+target_layer: 20
+batch_size: 16

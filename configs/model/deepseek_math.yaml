@@ -1,0 +1,5 @@
+# @package _global_
+model_name: "redwoodresearch/math_pwd_lock_deepseek_math7b_on_weak_pythia1b"
+source_layer: 10
+target_layer: 20
+batch_size: 16

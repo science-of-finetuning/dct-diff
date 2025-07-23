@@ -7,7 +7,7 @@ from loguru import logger
 from tqdm import trange
 
 from .steer_models import SteeringEffectExtractor
-from .utils import replace_with_grad
+from .utils import auto_device, replace_with_grad
 
 
 class DCT(nn.Module):
@@ -32,20 +32,23 @@ class DCT(nn.Module):
         num_vectors: int,
         num_orthogonalization_steps: int,
         activation_fn: Callable | None = None,
+        device: th.device | None = None,
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_vectors = num_vectors
-        self.steering_vectors = nn.Parameter(th.zeros(num_vectors, hidden_size))
+        self.steering_vectors = nn.Parameter(
+            th.zeros(num_vectors, hidden_size, device=device)
+        )
 
         if activation_fn is None:
             activation_fn = th.expm1
         self.activation_fn = activation_fn
         self.scales = nn.Parameter(
-            th.ones(num_vectors)
+            th.ones(num_vectors, device=device)
         )  # todo: proper initialization???
         # todo: disable grad? for scales?
-        downstream_effects = th.randn(num_vectors, hidden_size)
+        downstream_effects = th.randn(num_vectors, hidden_size, device=device)
         downstream_effects = downstream_effects / th.norm(
             downstream_effects, dim=1, keepdim=True
         )
@@ -216,7 +219,9 @@ class SoftOrthGradIteration:
         beta: float | None = None,
         use_sim_loss: bool = False,
         logger_type: Literal["wandb", "print"] | None = None,
+        device: th.device | None = None,
     ):
+        self.device = auto_device(device)
         if isinstance(prompts, str):
             prompts = [prompts]
         self.prompts = prompts
@@ -226,6 +231,7 @@ class SoftOrthGradIteration:
             self.steering_diffs_extractor.hidden_size,
             num_steering_vectors,
             num_orthogonalization_steps=num_orthogonalization_steps,
+            device=self.device,
         )
         self.dct.init_steering_vectors(
             self.steering_diffs_extractor(prompts, self.dct.steering_vectors)
@@ -238,7 +244,7 @@ class SoftOrthGradIteration:
         for step in trange(num_epochs):
             steering_diffs = self.steering_diffs_extractor(
                 self.prompts, self.dct.steering_vectors
-            )
+            ).to(self.device)
             causal_loss, sim_loss, sim_matrix = self.dct.objective(
                 steering_diffs, return_tuple=True
             )
@@ -248,6 +254,7 @@ class SoftOrthGradIteration:
             loss.backward()
             self.dct.step(steering_diffs, sim_matrix)
             self.log(step, causal_loss, sim_loss, sim_matrix, self.dct, steering_diffs)
+        return self.dct.steering_vectors.detach().cpu()
 
     @th.no_grad()
     def log(
