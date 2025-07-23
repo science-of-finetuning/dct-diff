@@ -4,11 +4,12 @@ from tqdm.auto import tqdm
 import numpy as np
 import torch as th
 import torch.nn.functional as F
-from einops import einsum
+from einops import einsum, rearrange
 from nnterp import StandardizedTransformer
 from loguru import logger
-from .utils import SteeringDataLoader, dummy_input
+from .utils import SteeringDataLoader, dummy_input, cleanup_generations
 from scipy.optimize import root_scalar
+from typing import Literal
 
 
 class SteeringEffectExtractor(ABC):
@@ -91,17 +92,17 @@ class SteerSingleModel(SteeringEffectExtractor):
         steering_vectors: th.Tensor,
         steering_factor: float | None = None,
         cache_inputs: bool = False,
+        return_type: Literal["steered_acts", "steering_vectors"] = "steered_acts",
     ) -> th.Tensor:
         n_steering_vectors = steering_vectors.shape[0]
         if isinstance(prompts, str):
             prompts = [prompts]
         num_prompts = len(prompts)
+        input_ids = None
         with self.model.trace(prompts) as tracer:
             seq_len = self.model.input_size[1].save()
             if cache_inputs:
                 input_ids = self.model.input_ids.save()
-            else:
-                input_ids = None
             source_attention_mask = self.model.attention_mask.bool().save()
             source_acts = self.model.layers_output[self.steer_layer]
             source_acts_device = source_acts.device.save()
@@ -122,6 +123,7 @@ class SteerSingleModel(SteeringEffectExtractor):
             self.steering_factor if steering_factor is None else steering_factor,
             batch_size=self.batch_size,
             input_ids=input_ids,
+            return_type=return_type,
         )
         return (
             source_acts,
@@ -192,11 +194,13 @@ class SteerSingleModel(SteeringEffectExtractor):
         ), f"diffs.shape: {diffs.shape}, n_steering_vectors: {n_steering_vectors}, hidden_size: {self.model.hidden_size}"
         return diffs
 
+    @th.no_grad()
     def steered_generations(
         self,
         prompts: str | list[str],
         steering_vectors: th.Tensor,
-        steering_factors: list[float] | float | None = None,
+        steering_factors: th.Tensor | list[float] | float | None = None,
+        steer_type: Literal["input_only", "all"] = "input_only",
         **kwargs,
     ) -> list[list[str]]:
         """
@@ -205,53 +209,80 @@ class SteerSingleModel(SteeringEffectExtractor):
         Args:
             prompts (str | list[str]): The prompts to steer.
             steering_vectors (th.Tensor): The steering vectors to use (n_steering_vectors, hidden_size)
-            steering_factor (float | None): The steering factor to use. Defaults to None, which means using the calibrated steering factor.
+            steering_factor (th.Tensor | list[float] | float | None): The steering factor to use. Defaults to None, which means using the calibrated steering factor.
 
         Returns:
             list[list[str]] | list[list[list[str]]]: The steered generations for each steering vector on each prompt. (n_steering_vectors, num_prompts) or (n_diff_steering_vectors, num_factors, num_prompts)
         """
-        if isinstance(steering_factors, list):
-            steering_factors = th.tensor(steering_factors)
+        if isinstance(prompts, str):
+            prompts = [prompts]
+        num_prompts = len(prompts)
+        if isinstance(steering_factors, (list, th.Tensor)):
+            if isinstance(steering_factors, list):
+                steering_factors = th.tensor(steering_factors)
             n_diff_steering_vectors = steering_vectors.shape[0]
             steering_factor = 1.0
             steering_vectors = einsum(
                 steering_factors,
                 steering_vectors,
-                "num_factors, num_vectors hidden_size -> (num_vectors num_factors) hidden_size",
+                "num_factors, num_vectors hidden_size -> num_vectors num_factors hidden_size",
+            )
+            steering_vectors = rearrange(
+                steering_vectors,
+                "num_vectors num_factors hidden_size -> (num_vectors num_factors) hidden_size",
             )
         elif isinstance(steering_factors, float) or steering_factors is None:
             steering_factor = steering_factors
             n_diff_steering_vectors = None
         else:
             raise ValueError(
-                f"Invalid steering_factors (expected list or float or None, got {type(steering_factors)})"
+                f"Invalid steering_factors (expected tensor, list or float or None, got {type(steering_factors)})"
             )
 
         n_steering_vectors = steering_vectors.shape[0]
-        (
-            source_acts,
-            target_acts,
+        with self.model.trace(prompts) as tracer:
+            source_attention_mask = self.model.attention_mask.bool().save()
+            input_ids = self.model.input_ids.save()
+            tracer.stop()
+
+        steered_act_dataloader = SteeringDataLoader(
+            None,
             source_attention_mask,
-            source_acts_device,
-            num_prompts,
-            seq_len,
-            steered_act_dataloader,
-        ) = self.prepare_steering_data(
-            prompts, steering_vectors, steering_factor, cache_inputs=True
+            steering_vectors,
+            self.steering_factor if steering_factor is None else steering_factor,
+            batch_size=self.batch_size,
+            input_ids=input_ids,
+            return_type="steering_vectors",
         )
+
         generations = []
-        for steered_activations, input_ids, attention_mask in tqdm(
+        for batch_steering, input_ids, attention_mask in tqdm(
             steered_act_dataloader, desc="Generating text with steering vectors"
         ):
+            # print(f"batch_steering.shape: {batch_steering.shape}, input_ids.shape: {input_ids.shape}, attention_mask.shape: {attention_mask.shape}")
+            batch_steering = batch_steering.to(self.model.device).unsqueeze(1)
+
+            def steer():
+                acts = self.model.layers_output[self.steer_layer]
+                steered_acts = acts + batch_steering
+                assert (
+                    steered_acts.shape == acts.shape
+                ), f"steered_acts.shape: {steered_acts.shape} != acts.shape: {acts.shape}"
+                self.model.layers_output[self.steer_layer] = steered_acts
+
             with self.model.generate(
                 dict(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
             ) as tracer:
-                self.model.layers_output[self.steer_layer] = steered_activations.to(
-                    source_acts_device
-                )
+                if steer_type == "all":
+                    with tracer.all():
+                        steer()
+                elif steer_type == "input_only":
+                    steer()
+                else:
+                    raise ValueError(f"Invalid steer_type: {steer_type}")
                 out = self.model.generator.output.save()
 
-            generations.extend(self.model.tokenizer.decode_batch(out))
+            generations.extend(cleanup_generations(self.model.tokenizer.batch_decode(out), self.model.tokenizer))
         generations = np.array(generations)
         generations = generations.reshape(n_steering_vectors, num_prompts)
         if n_diff_steering_vectors is not None:
