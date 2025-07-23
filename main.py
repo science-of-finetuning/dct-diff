@@ -1,16 +1,17 @@
 import json
 import time
+import sys
+from pathlib import Path
 
 from coolname import generate_slug
 import torch as th
-from dct_diff import DCT, SoftOrthGradIteration, SteerSingleModel
 from nnterp import StandardizedTransformer
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
-from pathlib import Path
-import sys
 
+from dct_diff import SoftOrthGradIteration, SteerSingleModel
+from dct_diff.utils import cleanup_generations
 
 def tee_file():
     """Decorator that tees stdout and stderr to multiple files."""
@@ -145,7 +146,7 @@ def main(cfg: DictConfig) -> None:
         test_prompts, max_new_tokens=cfg.max_new_tokens, do_sample=cfg.do_sample
     ) as tracer:
         out = model.generator.output.save()
-    baseline_generations = model.tokenizer.batch_decode(out)
+    baseline_generations = cleanup_generations(model.tokenizer.batch_decode(out), model.tokenizer)
 
     assert len(generations_all) == len(
         steering_vectors
